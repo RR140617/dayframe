@@ -34,11 +34,10 @@ function zipEntries(buffer){
 }
 async function unzipEntry(e){
  const raw=e.bytes.subarray(e.dataAt,e.dataAt+e.compressed);
- if(e.method===0)return new Uint8Array(raw);
- if(e.method!==8)throw Error('This ZIP uses an unsupported compression method.');
- if(typeof DecompressionStream==='undefined')throw Error('This browser cannot extract ZIP albums. Try the latest Chrome.');
- const stream=new Blob([raw]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
- const result=new Uint8Array(await new Response(stream).arrayBuffer());
+ if(e.method===0)return raw;
+ if(e.method!==8)throw Error('This ZIP uses an unsupported compression method ('+e.method+').');
+ if(typeof pako==='undefined')throw Error('The ZIP extractor did not load. Refresh DayFrame while online and try again.');
+ const result=pako.inflateRaw(raw);
  if(result.length!==e.size)throw Error('A ZIP photo could not be fully extracted.');
  return result;
 }
@@ -52,7 +51,7 @@ function zipDateFromName(name){return name.split('/').pop().replace(/\.(?:supple
 async function importAlbumZip(file){
  const status=$('status');status.textContent='Opening album ZIP…';
  try{
-  const buffer=await file.arrayBuffer(),entries=zipEntries(buffer);
+  if(file.size>900*1024*1024)throw Error('This album is over 900 MB. For now, split it into smaller ZIPs to avoid phone memory limits.');const buffer=await file.arrayBuffer().catch(()=>{throw Error('Your browser could not read this ZIP. Try selecting a locally saved file, not a cloud-only placeholder.');});const entries=zipEntries(buffer);
   const imageEntries=entries.filter(e=>/\.(jpe?g|png|webp|heic|heif|gif|avif)$/i.test(e.name)&&!e.name.startsWith('__MACOSX/')&&!e.name.endsWith('/'));
   if(!imageEntries.length)throw Error('No photos were found in this ZIP.');
   const metadata=new Map();
