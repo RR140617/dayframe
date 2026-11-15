@@ -3,7 +3,8 @@
 A local-first, installable mobile web app (PWA). No account, server, or paid service is needed for photo processing.
 
 ## Features
-- Import multiple image files or a folder (where supported by the browser).
+- Import an entire Google Photos downloaded album ZIP, plus individual images or folders. ZIP extraction happens locally in the browser.
+- Read Google Photos JSON sidecar timestamps when included in the ZIP. ZIP imports work best in up-to-date Chrome.
 - Read **JPEG EXIF DateTimeOriginal** when present. Otherwise use date embedded in filename (YYYYMMDD or YYYY-MM-DD), then file last-modified date (clearly flagged as uncertain).
 - Group photos by calendar day; sort oldest/newest; select entire days or individual images.
 - Export original image bytes into a ZIP with one folder per day, for later extraction and Instagram upload.
@@ -35,3 +36,8 @@ For phone installation, host the folder on a free HTTPS static host (for example
 - ZIP creation is memory-intensive. Export smaller batches; a maximum of 300 photos / approximately 700 MB per export is enforced.
 - This app prepares photo packs but does not automatically post to Instagram or make Instagram-sized crops.
 - For privacy, the app makes no network uploads of your photos. GitHub Pages serves only the app's static code.
+
+## Update an existing GitHub Pages deployment
+Upload the changed `index.html`, `app.js`, `sw.js` and other app files to the repository root, choosing to replace files with the same names. Commit changes and refresh the site after deployment.
+
+Note: very large album ZIPs may exhaust phone memory; use a laptop browser for huge archives. ZIP64 and uncommon ZIP compression methods are not supported. Google Photos album downloads do not always contain JSON sidecars, so uncertain dates will be flagged.

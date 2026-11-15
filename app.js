@@ -11,4 +11,73 @@ function showNotice(title,body){$('noticeTitle').textContent=title;$('noticeBody
 const enc=new TextEncoder();const u16=n=>new Uint8Array([n&255,n>>>8&255]);const u32=n=>new Uint8Array([n&255,n>>>8&255,n>>>16&255,n>>>24&255]);const concat=parts=>{const out=new Uint8Array(parts.reduce((n,p)=>n+p.length,0));let i=0;for(const p of parts){out.set(p,i);i+=p.length;}return out;};const crcTable=Array.from({length:256},(_,i)=>{let c=i;for(let j=0;j<8;j++)c=(c&1)?0xedb88320^(c>>>1):c>>>1;return c>>>0;});function crc32(bytes){let c=0xffffffff;for(const b of bytes)c=crcTable[(c^b)&255]^(c>>>8);return(c^0xffffffff)>>>0;}
 function dosTime(dt){const y=Math.max(1980,Math.min(2107,dt.getUTCFullYear()));return {time:(dt.getUTCHours()<<11)|(dt.getUTCMinutes()<<5)|(dt.getUTCSeconds()>>1),date:((y-1980)<<9)|((dt.getUTCMonth()+1)<<5)|dt.getUTCDate()};}
 async function zipExport(items){if(items.length>300){showNotice('Large export','Please export 300 photos or fewer at a time to avoid running out of phone memory.');return;}$('export').disabled=true;$('export').textContent='Preparing…';try{const locals=[],centrals=[];let offset=0;const used=new Set();for(const p of items){const folder=key(p.date);let name=`${folder}/${p.file.name.replace(/[\\/]/g,'_')}`;let n=2;while(used.has(name))name=`${folder}/${n++}_${p.file.name.replace(/[\\/]/g,'_')}`;used.add(name);const fname=enc.encode(name),bytes=new Uint8Array(await p.file.arrayBuffer()),crc=crc32(bytes),d=dosTime(p.date);const local=concat([u32(0x04034b50),u16(20),u16(0x0800),u16(0),u16(d.time),u16(d.date),u32(crc),u32(bytes.length),u32(bytes.length),u16(fname.length),u16(0),fname,bytes]);locals.push(local);const central=concat([u32(0x02014b50),u16(20),u16(20),u16(0x0800),u16(0),u16(d.time),u16(d.date),u32(crc),u32(bytes.length),u32(bytes.length),u16(fname.length),u16(0),u16(0),u16(0),u16(0),u32(0),u32(offset),fname]);centrals.push(central);offset+=local.length;if(offset>700*1024*1024)throw Error('Export exceeds 700 MB. Please select fewer photos.');}const centralSize=centrals.reduce((s,b)=>s+b.length,0);const end=concat([u32(0x06054b50),u16(0),u16(0),u16(items.length),u16(items.length),u32(centralSize),u32(offset),u16(0)]);const blob=new Blob([...locals,...centrals,end],{type:'application/zip'});const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`DayFrame_Instagram_${key(items[0].date)}_${items.length}_photos.zip`;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);showNotice('Export ready',`Your ZIP contains ${items.length} original photo(s), separated into folders by date. Extract the ZIP on your phone, then select the photos in Instagram. DayFrame does not upload or crop them.`);}catch(e){showNotice('Export failed',e.message||'Please try fewer photos.');}finally{$('export').disabled=false;$('export').textContent='Export ZIP ↓';}}
+// ZIP importer: reads ZIP central directory and extracts stored or DEFLATE entries locally.
+// Chrome/modern Android browsers support DecompressionStream('deflate-raw').
+const zipU16=(v,o)=>v.getUint16(o,true),zipU32=(v,o)=>v.getUint32(o,true);
+function zipEntries(buffer){
+ const v=new DataView(buffer), bytes=new Uint8Array(buffer);
+ let end=-1;for(let i=bytes.length-22;i>=Math.max(0,bytes.length-65557);i--){if(zipU32(v,i)===0x06054b50){end=i;break;}}
+ if(end<0)throw Error('Not a valid ZIP file.');
+ const total=zipU16(v,end+10),start=zipU32(v,end+16);
+ if(total===65535||start===0xffffffff)throw Error('ZIP64 archives are not supported. Please download a smaller album.');
+ const decoder=new TextDecoder();let pos=start;const entries=[];
+ for(let i=0;i<total;i++){
+  if(pos+46>bytes.length||zipU32(v,pos)!==0x02014b50)throw Error('The ZIP directory is damaged.');
+  const method=zipU16(v,pos+10),compressed=zipU32(v,pos+20),size=zipU32(v,pos+24),nameLen=zipU16(v,pos+28),extra=zipU16(v,pos+30),comment=zipU16(v,pos+32),offset=zipU32(v,pos+42);
+  const name=decoder.decode(bytes.subarray(pos+46,pos+46+nameLen));pos+=46+nameLen+extra+comment;
+  if(offset+30>bytes.length||zipU32(v,offset)!==0x04034b50)throw Error('A ZIP entry is damaged.');
+  const dataAt=offset+30+zipU16(v,offset+26)+zipU16(v,offset+28);
+  if(dataAt+compressed>bytes.length)throw Error('A ZIP entry is incomplete.');
+  entries.push({name,method,size,compressed,dataAt,bytes});
+ }
+ return entries;
+}
+async function unzipEntry(e){
+ const raw=e.bytes.subarray(e.dataAt,e.dataAt+e.compressed);
+ if(e.method===0)return new Uint8Array(raw);
+ if(e.method!==8)throw Error('This ZIP uses an unsupported compression method.');
+ if(typeof DecompressionStream==='undefined')throw Error('This browser cannot extract ZIP albums. Try the latest Chrome.');
+ const stream=new Blob([raw]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+ const result=new Uint8Array(await new Response(stream).arrayBuffer());
+ if(result.length!==e.size)throw Error('A ZIP photo could not be fully extracted.');
+ return result;
+}
+function sidecarDate(data){
+ try{const obj=JSON.parse(new TextDecoder().decode(data));
+  const stamp=obj.photoTakenTime?.timestamp||obj.creationTime?.timestamp;
+  if(stamp&&Number.isFinite(Number(stamp)))return new Date(Number(stamp)*1000);
+ }catch(e){}return null;
+}
+function zipDateFromName(name){return name.split('/').pop().replace(/\.(?:supplemental-metadata|metadata)\.json$/i,'').replace(/\.json$/i,'');}
+async function importAlbumZip(file){
+ const status=$('status');status.textContent='Opening album ZIP…';
+ try{
+  const buffer=await file.arrayBuffer(),entries=zipEntries(buffer);
+  const imageEntries=entries.filter(e=>/\.(jpe?g|png|webp|heic|heif|gif|avif)$/i.test(e.name)&&!e.name.startsWith('__MACOSX/')&&!e.name.endsWith('/'));
+  if(!imageEntries.length)throw Error('No photos were found in this ZIP.');
+  const metadata=new Map();
+  for(const e of entries.filter(e=>/\.json$/i.test(e.name)&&e.size<500000)){
+   const dt=sidecarDate(await unzipEntry(e));if(dt&&!isNaN(dt)){
+    const basename=zipDateFromName(e.name).toLowerCase();metadata.set(basename,dt);
+   }
+  }
+  const existing=new Set(photos.map(p=>p.file.name+'|'+p.file.size+'|'+p.file.lastModified));
+  let added=0,uncertain=0,fromMetadata=0,skipped=0;
+  for(let i=0;i<imageEntries.length;i++){
+   const e=imageEntries[i];status.textContent=`Importing album… ${i+1} / ${imageEntries.length}`;
+   try{
+    const data=await unzipEntry(e),name=e.name.split('/').pop();
+    const dtMeta=metadata.get(name.toLowerCase())||metadata.get(name.toLowerCase().replace(/\.[^.]+$/,''));
+    const photo=new File([data],name,{type:(/\.jpe?g$/i.test(name)?'image/jpeg':/\.png$/i.test(name)?'image/png':/\.webp$/i.test(name)?'image/webp':'application/octet-stream'),lastModified:dtMeta?.getTime()||Date.now()});
+    const sig=photo.name+'|'+photo.size+'|'+photo.lastModified;if(existing.has(sig))continue;existing.add(sig);
+    const detected=await getDate(photo);const date=dtMeta||detected.dt,source=dtMeta?'Google Photos metadata':detected.source;
+    if(source.includes('modified'))uncertain++;if(dtMeta)fromMetadata++;
+    photos.push({id:++nextId,file:photo,date,source,url:URL.createObjectURL(photo)});added++;
+   }catch(err){skipped++;}
+   if(i%12===0)await new Promise(resolve=>setTimeout(resolve,0));
+  }
+  render();showNotice('Album imported',`${added} photos imported across ${new Set(photos.map(p=>key(p.date))).size} day groups. ${fromMetadata} dates came from Google Photos metadata. ${uncertain} dates are uncertain. ${skipped} files could not be read.`);
+ }catch(err){render();showNotice('ZIP import failed',err.message||'Could not open this album ZIP.');}
+}
+$('albumZip').addEventListener('change',e=>{const file=e.target.files[0];if(file)importAlbumZip(file);e.target.value='';});
 $('photos').addEventListener('change',e=>{importFiles(e.target.files);e.target.value='';});$('folder').addEventListener('change',e=>{importFiles(e.target.files);e.target.value='';});$('sort').addEventListener('change',render);$('clear').onclick=()=>{if(confirm('Remove all imported photos from this session? Your original files will not be deleted.')){photos.forEach(p=>URL.revokeObjectURL(p.url));photos=[];selected.clear();render();}};$('deselect').onclick=()=>{selected.clear();render();};$('export').onclick=()=>zipExport(photos.filter(p=>selected.has(p.id)));$('closeNotice').onclick=()=>$('notice').close();if('serviceWorker'in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('./sw.js').catch(()=>{});render();
